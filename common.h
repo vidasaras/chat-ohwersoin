@@ -36,6 +36,7 @@ typedef struct {
     char username[MAX_USERNAME_LEN];
     pthread_t recv_thread;
     int running;
+    int nogui;
 } ChatApp;
 
 // Socket utility functions

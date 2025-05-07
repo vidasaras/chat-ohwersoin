@@ -13,9 +13,17 @@ void* receive_messages(void *arg) {
         if (bytes_read > 0) {
             buffer[bytes_read] = '\0';
             add_message(app, buffer, 0);
+
+            // In nogui mode, print messages directly to terminal
+            if (app->nogui) {
+                printf("%s\n", buffer);
+            }
         } else if (bytes_read == 0) {
             // Connection closed
             add_message(app, "*** Server disconnected ***", 0);
+            if (app->nogui) {
+                printf("*** Server disconnected ***\n");
+            }
             app->running = 0;
             break;
         } else {
@@ -31,8 +39,8 @@ void* receive_messages(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <server_ip> <username>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <server_ip> <username> [--nogui]\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -45,10 +53,18 @@ int main(int argc, char *argv[]) {
     strncpy(app.username, argv[2], MAX_USERNAME_LEN - 1);
     app.username[MAX_USERNAME_LEN - 1] = '\0';
 
-    // Initialize SDL
-    if (init_sdl(&app) < 0) {
-        fprintf(stderr, "Failed to initialize SDL!\n");
-        return EXIT_FAILURE;
+    // Check for nogui flag
+    app.nogui = 0;
+    if (argc == 4 && strcmp(argv[3], "--nogui") == 0) {
+        app.nogui = 1;
+    }
+
+    // Initialize SDL only if not in nogui mode
+    if (!app.nogui) {
+        if (init_sdl(&app) < 0) {
+            fprintf(stderr, "Failed to initialize SDL!\n");
+            return EXIT_FAILURE;
+        }
     }
 
     // Create socket and connect to server
@@ -59,6 +75,8 @@ int main(int argc, char *argv[]) {
         close_socket(app.socket_fd);
         return EXIT_FAILURE;
     }
+
+    app.running = 1;
 
     // Start receive thread
     if (pthread_create(&app.recv_thread, NULL, receive_messages, &app) != 0) {
@@ -73,38 +91,60 @@ int main(int argc, char *argv[]) {
     snprintf(join_msg, BUFFER_SIZE, "*** %s has joined the chat ***", app.username);
     send(app.socket_fd, join_msg, strlen(join_msg), 0);
 
-    // Main event loop
-    SDL_Event e;
-    SDL_StartTextInput();
+    // Main loop
+    if (app.nogui) {
+        // Terminal mode
+        printf("Chat started. Type your messages and press Enter. Use Ctrl+C to exit.\n");
 
-    while (app.running) {
-        while (SDL_PollEvent(&e)) {
-            switch (e.type) {
-                case SDL_QUIT:
-                    app.running = 0;
-                    break;
-                case SDL_TEXTINPUT:
-                    handle_text_input(&app, e.text.text);
-                    break;
-                case SDL_KEYDOWN:
-                    handle_key(&app, e.key.keysym.sym);
-                    break;
+        while (app.running) {
+            char input[BUFFER_SIZE];
+            if (fgets(input, BUFFER_SIZE - 1, stdin) != NULL) {
+                // Remove newline
+                size_t len = strlen(input);
+                if (len > 0 && input[len - 1] == '\n') {
+                    input[len - 1] = '\0';
+                }
+
+                // Send message
+                if (strlen(input) > 0) {
+                    send_message(&app, input);
+                }
             }
         }
+    } else {
+        // GUI mode
+        SDL_Event e;
+        SDL_StartTextInput();
 
-        // Render
-        SDL_SetRenderDrawColor(app.renderer, 200, 200, 200, 255);
-        SDL_RenderClear(app.renderer);
+        while (app.running) {
+            while (SDL_PollEvent(&e)) {
+                switch (e.type) {
+                    case SDL_QUIT:
+                        app.running = 0;
+                        break;
+                    case SDL_TEXTINPUT:
+                        handle_text_input(&app, e.text.text);
+                        break;
+                    case SDL_KEYDOWN:
+                        handle_key(&app, e.key.keysym.sym);
+                        break;
+                }
+            }
 
-        render_messages(&app);
-        render_input(&app);
+            // Render
+            SDL_SetRenderDrawColor(app.renderer, 200, 200, 200, 255);
+            SDL_RenderClear(app.renderer);
 
-        SDL_RenderPresent(app.renderer);
-        SDL_Delay(16); // ~60 FPS
+            render_messages(&app);
+            render_input(&app);
+
+            SDL_RenderPresent(app.renderer);
+            SDL_Delay(16); // ~60 FPS
+        }
+
+        // Clean up GUI
+        SDL_StopTextInput();
     }
-
-    // Clean up
-    SDL_StopTextInput();
     app.running = 0;
 
     // Send leave message
@@ -116,7 +156,9 @@ int main(int argc, char *argv[]) {
     pthread_join(app.recv_thread, NULL);
 
     close_socket(app.socket_fd);
-    cleanup_sdl(&app);
+    if (!app.nogui) {
+        cleanup_sdl(&app);
+    }
 
     return EXIT_SUCCESS;
 }
